@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chat App</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    .container { display: flex; gap: 20px; }
+    .panel { border: 1px solid #ccc; padding: 10px; width: 320px; }
+    .chat { flex: 1; border: 1px solid #ccc; padding: 10px; }
+    .message { margin: 5px 0; }
+    .system-message {
+      margin: 8px 0;
+      padding: 8px 10px;
+      border-radius: 6px;
+      background: #f3f4f6;
+      color: #374151;
+      font-style: italic;
+      text-align: center;
+    }
+    .controls { margin-bottom: 10px; }
+    button, input, select { margin-top: 5px; width: 100%; padding: 8px; }
+    #messages { height: 320px; overflow: auto; border: 1px solid #eee; padding: 10px; margin-bottom: 10px; }
+    .user-item { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+  </style>
+</head>
+<body>
+  <h2>Chat App</h2>
+
+  <div class="controls">
+    <input id="email" placeholder="Email" />
+    <input id="password" type="password" placeholder="Password" />
+    <button onclick="login()">Login</button>
+    <button onclick="register()">Register</button>
+  </div>
+
+  <div class="container">
+    <div class="panel">
+      <h3>Conversations</h3>
+      <div id="conversationList"></div>
+
+      <h3>Create Group</h3>
+      <input id="groupName" placeholder="Group name" />
+      <div id="groupUserList"></div>
+      <button onclick="createGroup()">Create Group</button>
+
+      <h3>All Users</h3>
+      <div id="userList"></div>
+    </div>
+
+    <div class="chat">
+      <h3 id="chatTitle">Chat</h3>
+      <div id="messages"></div>
+      <input id="messageInput" placeholder="Type message" />
+      <button onclick="sendMessage()">Send</button>
+      <div id="groupActions"></div>
+    </div>
+  </div>
+
+  <script>
+    let token = null;
+    let user = null;
+    let socket = null;
+    let conversations = [];
+    let allUsers = [];
+    let selectedConversationId = null;
+    let selectedConversation = null;
+
+    async function register() {
+      const payload = {
+        username: document.getElementById('email').value.split('@')[0],
+        email: document.getElementById('email').value,
+        password: document.getElementById('password').value,
+      };
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (data.success) {
+        token = data.token;
+        user = data.user;
+        appendSystemMessage(data.message || 'Account created successfully');
+        initSocket();
+        loadUsers();
+        loadConversations();
+      } else {
+        alert(data.message);
+      }
+    }
+
+    async function login() {
+      const payload = {
+        email: document.getElementById('email').value,
+        password: document.getElementById('password').value,
+      };
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (data.success) {
+        token = data.token;
+        user = data.user;
+        appendSystemMessage(data.message || 'Login successful');
+        initSocket();
+        loadUsers();
+        loadConversations();
+      } else {
+        alert(data.message);
+      }
+    }
+
+    function initSocket() {
+      if (socket) socket.close();
+      socket = new WebSocket(`ws://localhost:1020?token=${token}`);
+      socket.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === 'connected') {
+          appendSystemMessage(data.message || 'Connected');
+          return;
+        }
+
+        if (data.type === 'chat_message' && data.conversationId === selectedConversationId) {
+          appendMessage(data);
+        }
+      };
+    }
+
+    async function loadUsers() {
+      const res = await fetch('/api/chat/users', { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
+      allUsers = data.users || [];
+      renderUserLists();
+    }
+
+    function renderUserLists() {
+      const userList = document.getElementById('userList');
+      const groupUserList = document.getElementById('groupUserList');
+      userList.innerHTML = '';
+      groupUserList.innerHTML = '';
+
+      allUsers.forEach((u) => {
+        const userRow = document.createElement('div');
+        userRow.className = 'user-item';
+
+        const nameLabel = document.createElement('div');
+        nameLabel.textContent = `${u.username} (${u.email})`;
+        nameLabel.style.flex = '1';
+
+        const directBtn = document.createElement('button');
+        directBtn.textContent = `Chat with ${u.username}`;
+        directBtn.onclick = () => startDirectConversation(u._id);
+
+        userRow.appendChild(nameLabel);
+        userRow.appendChild(directBtn);
+        userList.appendChild(userRow);
+
+        const groupRow = document.createElement('div');
+        groupRow.className = 'user-item';
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.value = u._id;
+        checkbox.id = `group-${u._id}`;
+
+        const label = document.createElement('label');
+        label.htmlFor = checkbox.id;
+        label.textContent = `${u.username} (${u.email})`;
+        label.style.flex = '1';
+
+        groupRow.appendChild(checkbox);
+        groupRow.appendChild(label);
+        groupUserList.appendChild(groupRow);
+      });
+    }
+
+    function getConversationLabel(conversation) {
+      if (conversation.type === 'group') {
+        return conversation.name;
+      }
+
+      const otherParticipants = (conversation.participants || []).filter((p) => {
+        const participantId = p._id ? p._id.toString() : p.toString();
+        return participantId !== (user?.id || user?._id)?.toString();
+      });
+
+      if (otherParticipants.length === 0) {
+        return conversation.participants.map((p) => p.username || p.email || p._id).join(', ');
+      }
+
+      return otherParticipants.map((p) => p.username || p.email || p._id).join(', ');
+    }
+
+    async function loadConversations() {
+      const res = await fetch('/api/chat/conversations', { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
+      conversations = data.conversations || [];
+      const list = document.getElementById('conversationList');
+      list.innerHTML = '';
+      conversations.forEach((conversation) => {
+        const btn = document.createElement('button');
+        btn.textContent = getConversationLabel(conversation);
+        btn.onclick = () => openConversation(conversation._id);
+        list.appendChild(btn);
+      });
+    }
+
+    async function startDirectConversation(userId) {
+      const res = await fetch('/api/chat/direct', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ userId })
+      });
+      const data = await res.json();
+      if (data.success) {
+        await loadConversations();
+        openConversation(data.conversation._id);
+      }
+    }
+
+    async function createGroup() {
+      const name = document.getElementById('groupName').value.trim();
+      if (!name) return alert('Group name is required');
+
+      const selectedIds = Array.from(document.querySelectorAll('#groupUserList input[type="checkbox"]:checked')).map((input) => input.value);
+      const payload = { name, participantIds: selectedIds };
+
+      const res = await fetch('/api/chat/group', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (data.success) {
+        await loadConversations();
+        openConversation(data.conversation._id);
+      } else {
+        alert(data.message);
+      }
+    }
+
+    async function openConversation(conversationId) {
+      selectedConversationId = conversationId;
+      selectedConversation = conversations.find((c) => c._id === conversationId) || null;
+      socket.send(JSON.stringify({ type: 'join_conversation', conversationId }));
+      renderGroupActions();
+
+      const res = await fetch(`/api/chat/messages/${conversationId}`, { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
+      const container = document.getElementById('messages');
+      container.innerHTML = '';
+      (data.messages || []).forEach((msg) => appendMessage(msg));
+    }
+
+    function renderGroupActions() {
+      const container = document.getElementById('groupActions');
+      container.innerHTML = '';
+      if (!selectedConversation || selectedConversation.type !== 'group') {
+        return;
+      }
+
+      const isAdmin = user && selectedConversation.admin && selectedConversation.admin.toString() === user.id.toString();
+      if (!isAdmin) {
+        container.innerHTML = '<p>You are not the admin of this group.</p>';
+        return;
+      }
+
+      const input = document.createElement('input');
+      input.id = 'addMemberInput';
+      input.placeholder = 'Add member user id';
+
+      const button = document.createElement('button');
+      button.textContent = 'Add Member';
+      button.onclick = addMemberToGroup;
+
+      container.appendChild(input);
+      container.appendChild(button);
+    }
+
+    async function addMemberToGroup() {
+      if (!selectedConversationId) return;
+      const input = document.getElementById('addMemberInput');
+      const userId = input.value.trim();
+      if (!userId) return alert('Enter a user id');
+
+      const res = await fetch(`/api/chat/group/${selectedConversationId}/add`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ userId })
+      });
+      const data = await res.json();
+      if (data.success) {
+        await loadConversations();
+        openConversation(selectedConversationId);
+      } else {
+        alert(data.message);
+      }
+    }
+
+    function appendSystemMessage(text) {
+      const container = document.getElementById('messages');
+      const div = document.createElement('div');
+      div.className = 'system-message';
+      div.textContent = text;
+      container.appendChild(div);
+    }
+
+    function appendMessage(message) {
+      const container = document.getElementById('messages');
+      const div = document.createElement('div');
+      div.className = 'message';
+      div.textContent = `${message.sender?.username || 'You'}: ${message.content}`;
+      container.appendChild(div);
+    }
+
+    async function sendMessage() {
+      const input = document.getElementById('messageInput');
+      const content = input.value.trim();
+      if (!content || !selectedConversationId) return;
+      socket.send(JSON.stringify({ type: 'chat_message', content, conversationId: selectedConversationId }));
+      input.value = '';
+    }
+  </script>
+</body>
+</html>
