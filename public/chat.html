@@ -116,7 +116,9 @@
 
     function initSocket() {
       if (socket) socket.close();
-      socket = new WebSocket(`ws://localhost:1020?token=${token}`);
+      // socket = new WebSocket(`ws://localhost:1020?token=${token}`);
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      socket = new WebSocket(`${wsProtocol}//${window.location.host}?token=${token}`);
       socket.onmessage = (event) => {
         const data = JSON.parse(event.data);
         if (data.type === 'connected') {

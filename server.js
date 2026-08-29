@@ -46,7 +46,7 @@ setInterval(() => {
 }, 30000);
 
 // --- START THE SERVER ---
-const PORT = process.env.PORT || 1020;
+const PORT = process.env.PORT || 3030;
 
 connectDB().then(() => {
   listenWithPortFallback(
